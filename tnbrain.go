@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/hex"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -35,43 +34,48 @@ type (
 	}
 )
 
-const port = "/dev/ttyAMA0"
+const ser = "/dev/ttyAMA0"
 
-var id uint64 = 0
+var (
+	id   uint64 = 0
+	port *serial.Port
+)
 
 // Here the channels are buffered, so that it is asynchronous
-func Serial(in, out chan []byte) {
-	conn := &serial.Config{Name: port, Baud: 115200}
-	port, err := serial.OpenPort(conn)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer port.Close()
-
-	var _msg, msg []byte
+func SerialRead(out chan []byte) {
 	var pkg []byte
 	for {
 		pkg = make([]byte, 27) // This is inefficient and reads extra
-		_msg = <-in
-		msg = make([]byte, hex.EncodedLen(len(_msg)))
-		hex.Encode(msg, _msg)
-		_, err = port.Read(pkg)
+		_, err := port.Read(pkg)
 		if err != nil {
 			log.Fatal(err)
 		}
-		_, nerr := port.Write(msg)
-		if nerr != nil {
-			log.Fatal(err)
-		}
+		log.Printf("UART IN %s\n", pkg)
 		out <- pkg
-		log.Println(pkg)
 	}
 
+}
+func SerialWrite(in chan []byte) {
+	var _msg, msg []byte
+	for {
+		_msg = <-in
+		log.Printf("RAW: %x\n", _msg)
+		msg = make([]byte, hex.EncodedLen(len(_msg)))
+		hex.Encode(msg, _msg)
+		msg = append([]byte("$"), msg...)
+		msg = append(msg, []byte("\n")...)
+		log.Printf("OUT: %s\n", msg)
+		n, err := port.Write(msg)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Wrote %v bytes of data\n", n)
+	}
 }
 func ToHavu(in, out chan string) {
 	for {
 		msg := <-in
-		log.Println(msg)
+		log.Printf("HAVU %s\n", msg)
 		r := strings.NewReader(msg)
 		_, err := http.Post("http://scout.polygame.org/api/msg", "text/plain", r)
 		if err != nil {
@@ -82,16 +86,17 @@ func ToHavu(in, out chan string) {
 
 func MainLoop(in, out chan []byte, win, wout chan string) error {
 	devs := make([]Relay, 1)
-	devs[0] = Relay{"TB1", []string{"TB1"}, "", time.Now()}
+	devs[0] = Relay{"TB1", []string{"__:", "TB1"}, "", time.Now()}
 	for {
 		for _, dev := range devs {
-			smac := tnparse.MACSuper{int(id), 1, 0, dev.path}
-			out <- smac.NewMac()
+			smac := tnparse.MACSuper{int(id), 1, 1, dev.path}
+			hsmac := smac.NewMac()
+			out <- hsmac
 
-			dat := <-in
 			submac := tnparse.MACSub{int(id), 0, tnparse.POSPOLL{}}
 			out <- submac.NewSub()
 
+			dat := <-in
 			_smsg := dat[1 : len(dat)-1]
 			smsg := make([]byte, hex.DecodedLen(len(_smsg)))
 			hex.Decode(smsg, _smsg)
@@ -121,20 +126,27 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 					_ = t
 				}
 			}
-			fmt.Println(dev.id)
-
 			atomic.AddUint64(&id, 1)
 		}
 	}
 }
 
 func main() {
-	sin := make(chan []byte, 50)
-	sout := make(chan []byte, 50)
+	conn := &serial.Config{Name: ser, Baud: 115200}
+	_port, err := serial.OpenPort(conn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	port = _port
+	defer port.Close()
+	log.Println("Hello")
+	sin := make(chan []byte)
+	sout := make(chan []byte)
 
 	win := make(chan string, 50)
 	wout := make(chan string, 50)
-	go Serial(sout, sin)
+	go SerialRead(sin)
+	go SerialWrite(sout)
 	go ToHavu(wout, win)
 	MainLoop(sin, sout, win, wout)
 }
