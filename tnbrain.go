@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -40,18 +41,20 @@ var id uint64 = 0
 
 // Here the channels are buffered, so that it is asynchronous
 func Serial(in, out chan []byte) {
-	conn := &serial.Config{Name: "TTYAMA0", Baud: 115200}
+	conn := &serial.Config{Name: port, Baud: 115200}
 	port, err := serial.OpenPort(conn)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer port.Close()
 
-	var msg []byte
+	var _msg, msg []byte
 	var pkg []byte
 	for {
 		pkg = make([]byte, 27) // This is inefficient and reads extra
-		msg = <-in
+		_msg = <-in
+		msg = make([]byte, hex.EncodedLen(len(_msg)))
+		hex.Encode(msg, _msg)
 		_, err = port.Read(pkg)
 		if err != nil {
 			log.Fatal(err)
@@ -61,12 +64,14 @@ func Serial(in, out chan []byte) {
 			log.Fatal(err)
 		}
 		out <- pkg
+		log.Println(pkg)
 	}
 
 }
 func ToHavu(in, out chan string) {
 	for {
 		msg := <-in
+		log.Println(msg)
 		r := strings.NewReader(msg)
 		_, err := http.Post("http://scout.polygame.org/api/msg", "text/plain", r)
 		if err != nil {
@@ -77,14 +82,44 @@ func ToHavu(in, out chan string) {
 
 func MainLoop(in, out chan []byte, win, wout chan string) error {
 	devs := make([]Relay, 1)
-	devs[1] = Relay{"TB1", []string{""}, "", time.Now()}
+	devs[0] = Relay{"TB1", []string{"TB1"}, "", time.Now()}
 	for {
 		for _, dev := range devs {
 			smac := tnparse.MACSuper{int(id), 1, 0, dev.path}
 			out <- smac.NewMac()
-			cont := true
-			for cont {
 
+			dat := <-in
+			submac := tnparse.MACSub{int(id), 0, tnparse.POSPOLL{}}
+			out <- submac.NewSub()
+
+			_smsg := dat[1 : len(dat)-1]
+			smsg := make([]byte, hex.DecodedLen(len(_smsg)))
+			hex.Decode(smsg, _smsg)
+
+			mac := tnparse.MACSuper{}
+			mac.FromTNH(smsg)
+
+			for i := 0; i < mac.Pack_num; {
+				dat := <-in
+				_msg := dat[1 : len(dat)-1]
+				msg := make([]byte, hex.DecodedLen(len(_msg)))
+				hex.Decode(msg, _msg)
+				mc := tnparse.MACSub{}
+				mc.FromTNH(msg)
+				switch t := mc.Packet.(type) {
+				case tnparse.POSREPLY:
+					p := mc.Packet.(tnparse.POSREPLY)
+					switch _t := p.Pack.(type) {
+					case tnparse.POS:
+						_p := p.Pack.(tnparse.POS)
+						wout <- _p.Havu
+						i = mc.Pack_ord
+					default:
+						_ = _t
+					}
+				default:
+					_ = t
+				}
 			}
 			fmt.Println(dev.id)
 
