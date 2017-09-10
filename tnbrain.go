@@ -35,25 +35,49 @@ type (
 )
 
 const ser = "/dev/ttyAMA0"
+const logfile = "tacnetlog.log"
 
 var (
-	id   uint64 = 0
-	port *serial.Port
+	id      uint64 = 0
+	port    *serial.Port
+	timeout = 5
 )
+
+func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
+	smac := tnparse.MACSuper{int(id), 1, 1, dev.path}
+
+	submac := tnparse.MACSub{int(id), 0, pkg}
+	return smac, submac
+}
+
+func Timeout(t chan bool) {
+	time.Sleep(5 * time.Second)
+	t <- true
+}
 
 // Here the channels are buffered, so that it is asynchronous
 func SerialRead(out chan []byte) {
-	var pkg []byte
+	msgs := []byte{}
+	reading := false
 	for {
-		pkg = make([]byte, 27) // This is inefficient and reads extra
-		_, err := port.Read(pkg)
+		msg := make([]byte, 1)
+		_, err := port.Read(msg)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("READ")
 		}
-		log.Printf("UART IN %s\n", pkg)
-		out <- pkg
+		if msg[0] == '%' || msg[0] == '$' {
+			reading = true
+		} else if msg[0] == '\n' && reading == true {
+			reading = false
+			_msg := make([]byte, hex.DecodedLen(len(msgs)))
+			hex.Decode(_msg, msgs)
+			log.Printf("\nUART IN: %x\n", _msg)
+			out <- _msg
+			msgs = []byte{}
+		} else if reading == true {
+			msgs = append(msgs, msg...)
+		}
 	}
-
 }
 func SerialWrite(in chan []byte) {
 	var _msg, msg []byte
@@ -64,12 +88,12 @@ func SerialWrite(in chan []byte) {
 		hex.Encode(msg, _msg)
 		msg = append([]byte("$"), msg...)
 		msg = append(msg, []byte("\n")...)
-		log.Printf("OUT: %s\n", msg)
+		log.Printf("OUT: %s", msg)
 		n, err := port.Write(msg)
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("Wrote %v bytes of data\n", n)
+		log.Printf("Wrote %v bytes of data\n\n", n)
 	}
 }
 func ToHavu(in, out chan string) {
@@ -85,53 +109,69 @@ func ToHavu(in, out chan string) {
 }
 
 func MainLoop(in, out chan []byte, win, wout chan string) error {
-	devs := make([]Relay, 1)
-	devs[0] = Relay{"TB1", []string{"__:", "TB1"}, "", time.Now()}
+	devs := []Relay{}
+	tt := make(chan bool)
+	devs = append(devs, Relay{"KB1", []string{"__:", "KB1"}, "", time.Now()})
+	// devs = append(Relay{"TB1", []string{"__:", "KB1", "TB1"}, "", time.Now()})
+	// devs = append(Relay{"TB2", []string{"__:", "KB1", "TB2"}, "", time.Now()})
 	for {
 		for _, dev := range devs {
-			smac := tnparse.MACSuper{int(id), 1, 1, dev.path}
-			hsmac := smac.NewMac()
-			out <- hsmac
-
-			submac := tnparse.MACSub{int(id), 0, tnparse.POSPOLL{}}
+			time.Sleep(2 * time.Second)
+			smac, submac := CreateMacs(dev, tnparse.POSPOLL{})
+			out <- smac.NewMac()
 			out <- submac.NewSub()
 
-			dat := <-in
-			_smsg := dat[1 : len(dat)-1]
-			smsg := make([]byte, hex.DecodedLen(len(_smsg)))
-			hex.Decode(smsg, _smsg)
+			var smsg []byte
+			go Timeout(tt)
+			select {
+			case smsg = <-in:
 
-			mac := tnparse.MACSuper{}
-			mac.FromTNH(smsg)
+				mac := tnparse.MACSuper{}
+				mac.FromTNH(smsg)
+				log.Printf("INTERNAL %v\n", mac)
 
-			for i := 0; i < mac.Pack_num; {
-				dat := <-in
-				_msg := dat[1 : len(dat)-1]
-				msg := make([]byte, hex.DecodedLen(len(_msg)))
-				hex.Decode(msg, _msg)
-				mc := tnparse.MACSub{}
-				mc.FromTNH(msg)
-				switch t := mc.Packet.(type) {
-				case tnparse.POSREPLY:
-					p := mc.Packet.(tnparse.POSREPLY)
-					switch _t := p.Pack.(type) {
-					case tnparse.POS:
-						_p := p.Pack.(tnparse.POS)
-						wout <- _p.Havu
-						i = mc.Pack_ord
-					default:
-						_ = _t
+				for i := 0; i < mac.Pack_num-1; {
+					var msg []byte
+					go Timeout(tt)
+					select {
+					case msg = <-in:
+						mc := tnparse.MACSub{}
+						mc.FromTNH(msg)
+						log.Printf("INTERNAL %v\n", mc)
+						switch t := mc.Packet.(type) {
+						case tnparse.POSREPLY:
+							p := mc.Packet.(tnparse.POSREPLY)
+							switch _t := p.Pack.(type) {
+							case tnparse.POS:
+								_p := p.Pack.(tnparse.POS)
+								wout <- _p.Havu
+								i = mc.Pack_ord
+							default:
+								_ = _t
+							}
+						default:
+							_ = t
+						}
+					case <-tt:
+						log.Println("TIMEOUT CALLING %s", dev.id)
 					}
-				default:
-					_ = t
 				}
+				atomic.AddUint64(&id, 1)
+			case <-tt:
+				log.Println("TIMEOUT CALLING %s", dev.id)
 			}
-			atomic.AddUint64(&id, 1)
 		}
 	}
 }
 
 func main() {
+	// f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// if err != nil {
+	// 	fmt.Printf("error opening file: %v", err)
+	// }
+	// log.SetOutput(f)
+	// defer f.Close()
+
 	conn := &serial.Config{Name: ser, Baud: 115200}
 	_port, err := serial.OpenPort(conn)
 	if err != nil {
