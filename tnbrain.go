@@ -98,7 +98,7 @@ func ToHavu(in, out chan string) {
 		msg := <-in
 		log.Printf("HAVU %s\n", msg)
 		r := strings.NewReader(msg)
-		_, err := http.Post("http://scout.polygame.org/api/msg", "text/plain", r)
+		_, err := http.Post("http://hylly.havu.org/api/msg", "text/plain", r)
 		if err != nil {
 			log.Println(err)
 		}
