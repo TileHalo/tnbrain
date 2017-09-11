@@ -35,12 +35,12 @@ type (
 )
 
 const ser = "/dev/ttyAMA0"
-const logfile = "tacnetlog.log"
 
 var (
 	id      uint64 = 0
 	port    *serial.Port
 	timeout = 5
+	logfile = "tacnetlog.log"
 )
 
 func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
@@ -116,10 +116,9 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 	// devs = append(Relay{"TB2", []string{"__:", "KB1", "TB2"}, "", time.Now()})
 	for {
 		for _, dev := range devs {
-			time.Sleep(2 * time.Second)
-			smac, submac := CreateMacs(dev, tnparse.POSPOLL{})
-			out <- smac.NewMac()
-			out <- submac.NewSub()
+			smac, submac := CreateMacs(dev, &tnparse.POSPOLL{})
+			out <- smac.ToTNH()
+			out <- submac.ToTNH()
 
 			var smsg []byte
 			go Timeout(tt)
@@ -127,7 +126,7 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 			case smsg = <-in:
 
 				mac := tnparse.MACSuper{}
-				mac.FromTNH(smsg)
+				mac = mac.FromTNH(smsg).(tnparse.MACSuper)
 				log.Printf("INTERNAL %v\n", mac)
 
 				for i := 0; i < mac.Pack_num-1; {
@@ -136,21 +135,17 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 					select {
 					case msg = <-in:
 						mc := tnparse.MACSub{}
-						mc.FromTNH(msg)
+						mc = mc.FromTNH(msg).(tnparse.MACSub)
 						log.Printf("INTERNAL %v\n", mc)
-						switch t := mc.Packet.(type) {
+						switch mc.Packet.(type) {
 						case tnparse.POSREPLY:
 							p := mc.Packet.(tnparse.POSREPLY)
-							switch _t := p.Pack.(type) {
+							switch p.Pack.(type) {
 							case tnparse.POS:
 								_p := p.Pack.(tnparse.POS)
 								wout <- _p.Havu
 								i = mc.Pack_ord
-							default:
-								_ = _t
 							}
-						default:
-							_ = t
 						}
 					case <-tt:
 						log.Println("TIMEOUT CALLING %s", dev.id)
@@ -165,6 +160,8 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 }
 
 func main() {
+
+	// Enable this to log into a file
 	// f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	// if err != nil {
 	// 	fmt.Printf("error opening file: %v", err)
@@ -179,7 +176,9 @@ func main() {
 	}
 	port = _port
 	defer port.Close()
-	log.Println("Hello")
+
+	log.Println("TACNET starting")
+
 	sin := make(chan []byte)
 	sout := make(chan []byte)
 
