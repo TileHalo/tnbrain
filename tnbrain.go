@@ -37,10 +37,10 @@ type (
 const ser = "/dev/ttyAMA0"
 
 var (
-	id      uint64 = 0
-	port    *serial.Port
-	timeout = 5
-	logfile = "tacnetlog.log"
+	pack_time        = 60 // ms
+	id        uint64 = 0
+	port      *serial.Port
+	logfile   = "tacnetlog.log"
 )
 
 func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
@@ -50,8 +50,8 @@ func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
 	return smac, submac
 }
 
-func Timeout(t chan bool) {
-	time.Sleep(5 * time.Second)
+func Timeout(t chan bool, dur int) {
+	time.Sleep(time.Duration(dur) * time.Second)
 	t <- true
 }
 
@@ -71,8 +71,8 @@ func SerialRead(out chan []byte) {
 			reading = false
 			_msg := make([]byte, hex.DecodedLen(len(msgs)))
 			hex.Decode(_msg, msgs)
-			log.Printf("\nUART IN: %x\n", _msg)
 			out <- _msg
+			log.Printf("READ: %x\n", _msg)
 			msgs = []byte{}
 		} else if reading == true {
 			msgs = append(msgs, msg...)
@@ -83,17 +83,14 @@ func SerialWrite(in chan []byte) {
 	var _msg, msg []byte
 	for {
 		_msg = <-in
-		log.Printf("RAW: %x\n", _msg)
 		msg = make([]byte, hex.EncodedLen(len(_msg)))
 		hex.Encode(msg, _msg)
 		msg = append([]byte("$"), msg...)
 		msg = append(msg, []byte("\n")...)
-		log.Printf("OUT: %s", msg)
-		n, err := port.Write(msg)
+		_, err := port.Write(msg)
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("Wrote %v bytes of data\n\n", n)
 	}
 }
 func ToHavu(in, out chan string) {
@@ -110,33 +107,33 @@ func ToHavu(in, out chan string) {
 
 func MainLoop(in, out chan []byte, win, wout chan string) error {
 	devs := []Relay{}
-	tt := make(chan bool)
 	devs = append(devs, Relay{"KB1", []string{"__:", "KB1"}, "", time.Now()})
-	// devs = append(Relay{"TB1", []string{"__:", "KB1", "TB1"}, "", time.Now()})
+	devs = append(devs, Relay{"TB1", []string{"__:", "KB1", "TB1"}, "", time.Now()})
 	// devs = append(Relay{"TB2", []string{"__:", "KB1", "TB2"}, "", time.Now()})
 	for {
 		for _, dev := range devs {
+			tt := make(chan bool)
+			log.Printf("Polling device %s\n", dev.id)
 			smac, submac := CreateMacs(dev, &tnparse.POSPOLL{})
 			out <- smac.ToTNH()
 			out <- submac.ToTNH()
 
 			var smsg []byte
-			go Timeout(tt)
+			// tout := float64(pack_time*(len(dev.path)-2))/1000.0 + 0.4
+			go Timeout(tt, 5)
 			select {
 			case smsg = <-in:
 
 				mac := tnparse.MACSuper{}
 				mac = mac.FromTNH(smsg).(tnparse.MACSuper)
-				log.Printf("INTERNAL %v\n", mac)
-
-				for i := 0; i < mac.Pack_num-1; {
+				tt = make(chan bool)
+				for i := 0; i < mac.Pack_num; {
 					var msg []byte
-					go Timeout(tt)
+					go Timeout(tt, 5.0)
 					select {
 					case msg = <-in:
 						mc := tnparse.MACSub{}
 						mc = mc.FromTNH(msg).(tnparse.MACSub)
-						log.Printf("INTERNAL %v\n", mc)
 						switch mc.Packet.(type) {
 						case tnparse.POSREPLY:
 							p := mc.Packet.(tnparse.POSREPLY)
@@ -146,14 +143,17 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 								wout <- _p.Havu
 								i = mc.Pack_ord
 							}
+						default:
+							i = mac.Pack_num
 						}
 					case <-tt:
-						log.Println("TIMEOUT CALLING %s", dev.id)
+						log.Printf("TIMEOUT RECEIVING PACKETS %s\n", dev.id)
+						i = mac.Pack_num
 					}
 				}
 				atomic.AddUint64(&id, 1)
 			case <-tt:
-				log.Println("TIMEOUT CALLING %s", dev.id)
+				log.Printf("TIMEOUT CALLING %s\n", dev.id)
 			}
 		}
 	}
