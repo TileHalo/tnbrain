@@ -4,9 +4,10 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
-	"strings"
+	//"strings"
 	"sync/atomic"
 	"time"
+	"fmt"
 
 	"github.com/TileHalo/tnparse"
 	"github.com/tarm/serial"
@@ -97,8 +98,10 @@ func ToHavu(in, out chan string) {
 	for {
 		msg := <-in
 		log.Printf("HAVU %s\n", msg)
-		r := strings.NewReader(msg)
-		_, err := http.Post("http://hylly.havu.org/api/msg", "text/plain", r)
+		/*r := strings.NewReader(msg)
+		_, err := http.Post("http://scout.polygame.fi/api/msg", "text/plain", r)*/
+		_, err := http.Get(fmt.Sprintf("http://scout.polygame.fi/api/msg?msg=%s", msg))
+
 		if err != nil {
 			log.Println(err)
 		}
