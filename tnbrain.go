@@ -140,6 +140,7 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 							switch p.Pack.(type) {
 							case tnparse.POS:
 								_p := p.Pack.(tnparse.POS)
+								_p = _p.CalculateHavu(dev.id)
 								wout <- _p.Havu
 								i = mc.Pack_ord
 							}
