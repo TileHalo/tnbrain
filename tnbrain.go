@@ -43,7 +43,9 @@ var (
 	id        uint64 = 0
 	logfile          = "tacnetlog.log"
 	posfile          = "pos.log"
+	disfile          = "discard.log"
 	posfd     *os.File
+	disfd     *os.File
 	port      *serial.Port
 	devs      []Relay
 )
@@ -69,6 +71,8 @@ func WaitMac(in chan []byte) tnparse.MACSuper {
 					return mac
 				}
 			}
+			disfd.WriteString(string(msg))
+			disfd.WriteString("\n")
 		case <-tt:
 			return tnparse.MACSuper{Pack_num: 0}
 		}
@@ -101,6 +105,7 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 					_p := p.Pack.(tnparse.POS)
 					_p = _p.CalculateHavu(dev.id)
 					wout <- _p.Havu
+					posfd.WriteString(_p.Havu)
 					i = mc.Pack_ord
 				}
 			default:
@@ -204,11 +209,19 @@ func main() {
 	// }
 	// log.SetOutput(f)
 	// defer f.Close()
-	_fd, _err := os.Open(posfile)
-	if _err != nil {
-		fmt.Printf("Error opening file %s: %v", posfile, _err)
+
+	fd, err := os.Open(disfile)
+	if err != nil {
+		fmt.Printf("Error opening file %s: %v", disfile, err)
 	}
-	posfd = _fd
+	disfd = fd
+	defer disfd.Close() // Might report an error
+
+	fd, err = os.Open(posfile)
+	if err != nil {
+		fmt.Printf("Error opening file %s: %v", posfile, err)
+	}
+	posfd = fd
 	defer posfd.Close() // Might report an error
 
 	conn := &serial.Config{Name: ser, Baud: 115200}
