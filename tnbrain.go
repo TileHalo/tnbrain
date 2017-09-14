@@ -37,6 +37,7 @@ type (
 )
 
 const ser = "/dev/ttyAMA0"
+const get_fmt = "http://scout.polygame.fi/api/msg?msg=%s"
 
 var (
 	pack_time        = 60 // ms
@@ -60,6 +61,7 @@ func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
 func WaitMac(in chan []byte) tnparse.MACSuper {
 	var msg []byte
 	tt := make(chan bool)
+	log.Println("WRONG MAC")
 	go Timeout(tt, 1)
 	for {
 		select {
@@ -74,6 +76,7 @@ func WaitMac(in chan []byte) tnparse.MACSuper {
 			disfd.WriteString(string(msg))
 			disfd.WriteString("\n")
 		case <-tt:
+			log.Println("TIMEOUT waiting proper package")
 			return tnparse.MACSuper{Pack_num: 0}
 		}
 
@@ -82,8 +85,14 @@ func WaitMac(in chan []byte) tnparse.MACSuper {
 
 func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 	mac := tnparse.MACSuper{}
-	mac = mac.FromTNH(smsg).(tnparse.MACSuper)
-	if mac.Jump_num != len(mac.Addr) {
+	_mac := mac.FromTNH(smsg)
+	switch _mac.(type) {
+	case tnparse.MACSub:
+		mac = _mac.(tnparse.MACSuper)
+	default:
+		return
+	}
+	if mac.Jump_num != len(mac.Addr)-1 {
 		mac = WaitMac(in)
 		if mac.Pack_num == 0 {
 			return
@@ -96,7 +105,13 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 		select {
 		case msg = <-in:
 			mc := tnparse.MACSub{}
-			mc = mc.FromTNH(msg).(tnparse.MACSub)
+			_mc := mc.FromTNH(msg)
+			switch _mc.(type) {
+			case tnparse.MACSub:
+				mc = _mc.(tnparse.MACSub)
+			default:
+				return
+			}
 			switch mc.Packet.(type) {
 			case tnparse.POSREPLY:
 				p := mc.Packet.(tnparse.POSREPLY)
@@ -112,7 +127,9 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 				i = mac.Pack_num
 			}
 		case <-tt:
-			log.Printf("TIMEOUT RECEIVING PACKETS %s\n", dev.id)
+			log.Printf(`TIMEOUT RECEIVING PACKETS %s\n
+			RECEIVED %d PACKETS\n
+			EXPECTED %d\n`, dev.id, i, mac.Pack_num)
 			return
 		}
 	}
@@ -139,7 +156,6 @@ func SerialRead(out chan []byte) {
 			_msg := make([]byte, hex.DecodedLen(len(msgs)))
 			hex.Decode(_msg, msgs)
 			out <- _msg
-			log.Printf("READ: %x\n", _msg)
 			msgs = []byte{}
 		} else if reading == true {
 			msgs = append(msgs, msg...)
@@ -161,16 +177,16 @@ func SerialWrite(in chan []byte) {
 	}
 }
 func ToHavu(in, out chan string) {
+	log.Println("Started Havu thread")
 	for {
 		msg := <-in
-		log.Printf("HAVU %s\n", msg)
-		/*r := strings.NewReader(msg)
-		_, err := http.Post("http://scout.polygame.fi/api/msg", "text/plain", r)*/
-		_, err := http.Get(fmt.Sprintf("http://scout.polygame.fi/api/msg?msg=%s", msg))
+		for resp, err := http.Get(fmt.Sprintf(get_fmt, msg)); resp.StatusCode != 200 || err != nil; {
+			if err != nil {
+				log.Println(err)
+			}
 
-		if err != nil {
-			log.Println(err)
 		}
+
 	}
 }
 
@@ -178,7 +194,7 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 	devs = []Relay{}
 	devs = append(devs, Relay{"KB1", []string{"__:", "KB1"}, "", time.Now()})
 	devs = append(devs, Relay{"TB1", []string{"__:", "KB1", "TB1"}, "", time.Now()})
-	// devs = append(Relay{"TB2", []string{"__:", "KB1", "TB2"}, "", time.Now()})
+	devs = append(devs, Relay{"TB2", []string{"__:", "KB1", "TB1", "TB2"}, "", time.Now()})
 	for {
 		for _, dev := range devs {
 			tt := make(chan bool)
@@ -203,21 +219,21 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 func main() {
 
 	// Enable this to log into a file
-	// f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	// if err != nil {
-	// 	fmt.Printf("error opening file %s: %v",logfile,  err)
-	// }
-	// log.SetOutput(f)
-	// defer f.Close()
+	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("error opening file %s: %v", logfile, err)
+	}
+	log.SetOutput(f)
+	defer f.Close()
 
-	fd, err := os.Open(disfile)
+	fd, err := os.OpenFile(disfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		fmt.Printf("Error opening file %s: %v", disfile, err)
 	}
 	disfd = fd
 	defer disfd.Close() // Might report an error
 
-	fd, err = os.Open(posfile)
+	fd, err = os.OpenFile(posfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		fmt.Printf("Error opening file %s: %v", posfile, err)
 	}
@@ -238,9 +254,11 @@ func main() {
 	sout := make(chan []byte)
 	// Buffered (hence, async) because internet might have a bad day.
 	win := make(chan string, 200)
-	wout := make(chan string, 200)
+	wout := make(chan string, 18000)
 	go SerialRead(sin)
 	go SerialWrite(sout)
-	go ToHavu(wout, win)
+	for i := 0; i < 10; i++ {
+		go ToHavu(wout, win)
+	}
 	MainLoop(sin, sout, win, wout)
 }
