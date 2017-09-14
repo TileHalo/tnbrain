@@ -60,7 +60,7 @@ func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
 func WaitMac(in chan []byte) tnparse.MACSuper {
 	var msg []byte
 	tt := make(chan bool)
-	go Timeout(tt, 1)
+	go Timeout(tt, 1000)
 	for {
 		select {
 		case msg = <-in:
@@ -82,17 +82,35 @@ func WaitMac(in chan []byte) tnparse.MACSuper {
 
 func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 	mac := tnparse.MACSuper{}
-	mac = mac.FromTNH(smsg).(tnparse.MACSuper)
-	if mac.Jump_num != len(mac.Addr) {
+	_mac := mac.FromTNH(smsg)
+	switch _mac.(type) {
+	case tnparse.MACSuper:
+		mac = _mac.(tnparse.MACSuper)
+	default:
+		log.Printf("BAD SUPER: %v", _mac)
 		mac = WaitMac(in)
 		if mac.Pack_num == 0 {
+			log.Printf("BAD SUPER: %v", mac)
+			return
+		}
+	}
+	if mac.Jump_num != len(mac.Addr)-2 && len(mac.Addr) > 2 {
+		log.Printf("BAD SUPER: %v, %d", mac, len(mac.Addr)-1)
+		mac = WaitMac(in)
+		if mac.Pack_num == 0 {
+			log.Printf("BAD SUPER: %v", mac)
+			return
+		}
+	} else if mac.Jump_num != len(mac.Addr)-1 {
+		if mac.Pack_num == 0 {
+			log.Printf("BAD SUPER: %v", mac)
 			return
 		}
 	}
 	tt := make(chan bool)
 	for i := 0; i < mac.Pack_num; {
 		var msg []byte
-		go Timeout(tt, 5.0)
+		go Timeout(tt, 50)
 		select {
 		case msg = <-in:
 			mc := tnparse.MACSub{}
@@ -106,7 +124,9 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 					_p = _p.CalculateHavu(dev.id)
 					wout <- _p.Havu
 					posfd.WriteString(_p.Havu)
-					i = mc.Pack_ord
+					posfd.WriteString("\n")
+					i = mc.Pack_ord + 1
+					log.Printf("%d", i)
 				}
 			default:
 				i = mac.Pack_num
@@ -118,7 +138,7 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 	}
 }
 func Timeout(t chan bool, dur int) {
-	time.Sleep(time.Duration(dur) * time.Second)
+	time.Sleep(time.Duration(dur) * time.Millisecond)
 	t <- true
 }
 
@@ -188,7 +208,8 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 			out <- submac.ToTNH()
 
 			var smsg []byte
-			go Timeout(tt, 5)
+			tm := (len(dev.path)-2)*50 + 400
+			go Timeout(tt, tm)
 			select {
 			case smsg = <-in:
 				HandlePacket(smsg, in, dev, wout)
@@ -210,14 +231,14 @@ func main() {
 	// log.SetOutput(f)
 	// defer f.Close()
 
-	fd, err := os.Open(disfile)
+	fd, err := os.OpenFile(disfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		fmt.Printf("Error opening file %s: %v", disfile, err)
 	}
 	disfd = fd
 	defer disfd.Close() // Might report an error
 
-	fd, err = os.Open(posfile)
+	fd, err = os.OpenFile(posfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		fmt.Printf("Error opening file %s: %v", posfile, err)
 	}
@@ -238,9 +259,11 @@ func main() {
 	sout := make(chan []byte)
 	// Buffered (hence, async) because internet might have a bad day.
 	win := make(chan string, 200)
-	wout := make(chan string, 200)
+	wout := make(chan string, 18000)
 	go SerialRead(sin)
 	go SerialWrite(sout)
-	go ToHavu(wout, win)
+	for i := 0; i < 10; i++ {
+		go ToHavu(wout, win)
+	}
 	MainLoop(sin, sout, win, wout)
 }
