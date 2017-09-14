@@ -115,6 +115,7 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 		case msg = <-in:
 			mc := tnparse.MACSub{}
 			mc = mc.FromTNH(msg).(tnparse.MACSub)
+			i = mc.Pack_ord + 1
 			switch mc.Packet.(type) {
 			case tnparse.POSREPLY:
 				p := mc.Packet.(tnparse.POSREPLY)
@@ -125,7 +126,6 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 					wout <- _p.Havu
 					posfd.WriteString(_p.Havu)
 					posfd.WriteString("\n")
-					i = mc.Pack_ord + 1
 					log.Printf("%d", i)
 				}
 			case tnparse.Pong:
