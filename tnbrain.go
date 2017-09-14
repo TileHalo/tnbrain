@@ -128,8 +128,10 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 					i = mc.Pack_ord + 1
 					log.Printf("%d", i)
 				}
+			case tnparse.Pong:
+
 			default:
-				i = mac.Pack_num
+				return
 			}
 		case <-tt:
 			log.Printf("TIMEOUT RECEIVING PACKETS %s\n", dev.id)
@@ -181,15 +183,17 @@ func SerialWrite(in chan []byte) {
 	}
 }
 func ToHavu(in, out chan string) {
+	get_fmt := "http://scout.polygame.fi/api/msg?msg=%s"
 	for {
 		msg := <-in
 		log.Printf("HAVU %s\n", msg)
-		/*r := strings.NewReader(msg)
-		_, err := http.Post("http://scout.polygame.fi/api/msg", "text/plain", r)*/
-		_, err := http.Get(fmt.Sprintf("http://scout.polygame.fi/api/msg?msg=%s", msg))
 
-		if err != nil {
-			log.Println(err)
+		for resp, err := http.Get(fmt.Sprintf(get_fmt, msg)); resp.StatusCode != 200 || err != nil; {
+			if err != nil {
+				log.Println(err)
+			}
+			log.Printf("HAVU OK")
+
 		}
 	}
 }
@@ -198,7 +202,7 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 	devs = []Relay{}
 	devs = append(devs, Relay{"KB1", []string{"__:", "KB1"}, "", time.Now()})
 	devs = append(devs, Relay{"TB1", []string{"__:", "KB1", "TB1"}, "", time.Now()})
-	// devs = append(Relay{"TB2", []string{"__:", "KB1", "TB2"}, "", time.Now()})
+	devs = append(devs, Relay{"TB2", []string{"__:", "KB1", "TB2"}, "", time.Now()})
 	for {
 		for _, dev := range devs {
 			tt := make(chan bool)
@@ -224,12 +228,12 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 func main() {
 
 	// Enable this to log into a file
-	// f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	// if err != nil {
-	// 	fmt.Printf("error opening file %s: %v",logfile,  err)
-	// }
-	// log.SetOutput(f)
-	// defer f.Close()
+	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("error opening file %s: %v", logfile, err)
+	}
+	log.SetOutput(f)
+	defer f.Close()
 
 	fd, err := os.OpenFile(disfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
