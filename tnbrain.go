@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
+	"reflect"
+	"strings"
 	//"strings"
 	"fmt"
 	"os"
@@ -62,7 +64,7 @@ func WaitMac(in chan []byte) tnparse.MACSuper {
 	var msg []byte
 	tt := make(chan bool)
 	log.Println("WRONG MAC")
-	go Timeout(tt, 1)
+	go Timeout(tt, 1000)
 	for {
 		select {
 		case msg = <-in:
@@ -87,16 +89,19 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 	mac := tnparse.MACSuper{}
 	_mac := mac.FromTNH(smsg)
 	switch _mac.(type) {
-	case tnparse.MACSub:
+	case tnparse.MACSuper:
 		mac = _mac.(tnparse.MACSuper)
 	default:
-		return
+		log.Printf("WRONG SUPER PACKET: %x %s", smsg, reflect.TypeOf(_mac))
+		mac = WaitMac(in)
 	}
 	if mac.Jump_num != len(mac.Addr)-1 {
 		mac = WaitMac(in)
 		if mac.Pack_num == 0 {
 			return
 		}
+	} else if strings.Compare(mac.Addr[0], dev.id) != 0 {
+		log.Printf("MAC: %v, dev %s", mac, dev.id)
 	}
 	tt := make(chan bool)
 	for i := 0; i < mac.Pack_num; {
@@ -110,6 +115,7 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 			case tnparse.MACSub:
 				mc = _mc.(tnparse.MACSub)
 			default:
+				log.Println("WRONG PACKET")
 				return
 			}
 			switch mc.Packet.(type) {
@@ -134,8 +140,11 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 		}
 	}
 }
+
+// Two parameters, t is the channel and dur is the duration multiplier. Keep in
+// mind that the multiplied duration is in milliseconds
 func Timeout(t chan bool, dur int) {
-	time.Sleep(time.Duration(dur) * time.Second)
+	time.Sleep(time.Duration(dur) * time.Millisecond)
 	t <- true
 }
 
@@ -184,6 +193,7 @@ func ToHavu(in, out chan string) {
 			if err != nil {
 				log.Println(err)
 			}
+			log.Printf("HAVU OK")
 
 		}
 
@@ -204,7 +214,8 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 			out <- submac.ToTNH()
 
 			var smsg []byte
-			go Timeout(tt, 5)
+			tm := (len(dev.path)-2)*50 + 400
+			go Timeout(tt, tm)
 			select {
 			case smsg = <-in:
 				HandlePacket(smsg, in, dev, wout)
