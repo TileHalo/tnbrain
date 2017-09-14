@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
-	"reflect"
 	"strings"
 	//"strings"
 	"fmt"
@@ -63,7 +62,6 @@ func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
 func WaitMac(in chan []byte) tnparse.MACSuper {
 	var msg []byte
 	tt := make(chan bool)
-	log.Println("WRONG MAC")
 	go Timeout(tt, 1000)
 	for {
 		select {
@@ -92,12 +90,23 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 	case tnparse.MACSuper:
 		mac = _mac.(tnparse.MACSuper)
 	default:
-		log.Printf("WRONG SUPER PACKET: %x %s", smsg, reflect.TypeOf(_mac))
-		mac = WaitMac(in)
-	}
-	if mac.Jump_num != len(mac.Addr)-1 {
+		log.Printf("BAD SUPER: %v", _mac)
 		mac = WaitMac(in)
 		if mac.Pack_num == 0 {
+			log.Printf("BAD SUPER: %v", mac)
+			return
+		}
+	}
+	if mac.Jump_num != len(mac.Addr)-2 && len(mac.Addr) > 2 {
+		log.Printf("BAD SUPER: %v, %d", mac, len(mac.Addr)-1)
+		mac = WaitMac(in)
+		if mac.Pack_num == 0 {
+			log.Printf("BAD SUPER: %v", mac)
+			return
+		}
+	} else if mac.Jump_num != len(mac.Addr)-1 {
+		if mac.Pack_num == 0 {
+			log.Printf("BAD SUPER: %v", mac)
 			return
 		}
 	} else if strings.Compare(mac.Addr[0], dev.id) != 0 {
@@ -106,7 +115,7 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 	tt := make(chan bool)
 	for i := 0; i < mac.Pack_num; {
 		var msg []byte
-		go Timeout(tt, 5.0)
+		go Timeout(tt, 50)
 		select {
 		case msg = <-in:
 			mc := tnparse.MACSub{}
@@ -127,10 +136,14 @@ func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
 					_p = _p.CalculateHavu(dev.id)
 					wout <- _p.Havu
 					posfd.WriteString(_p.Havu)
-					i = mc.Pack_ord
+					posfd.WriteString("\n")
+					i = mc.Pack_ord + 1
+					log.Printf("%d", i)
 				}
+			case tnparse.Pong:
+
 			default:
-				i = mac.Pack_num
+				return
 			}
 		case <-tt:
 			log.Printf(`TIMEOUT RECEIVING PACKETS %s\n
@@ -186,9 +199,11 @@ func SerialWrite(in chan []byte) {
 	}
 }
 func ToHavu(in, out chan string) {
-	log.Println("Started Havu thread")
+	get_fmt := "http://scout.polygame.fi/api/msg?msg=%s"
 	for {
 		msg := <-in
+		log.Printf("HAVU %s\n", msg)
+
 		for resp, err := http.Get(fmt.Sprintf(get_fmt, msg)); resp.StatusCode != 200 || err != nil; {
 			if err != nil {
 				log.Println(err)
