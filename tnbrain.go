@@ -1,44 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"encoding/hex"
 	"log"
-	"net/http"
-	"strings"
-	//"strings"
-	"fmt"
 	"os"
-	"sync/atomic"
-	"time"
-
-	"github.com/TileHalo/tnparse"
+	"net/http"
 	"github.com/tarm/serial"
 )
 
-type (
-	Relay struct {
-		id     string
-		path   []string
-		status string
-		last   time.Time
-	}
-
-	Device struct {
-		id   string
-		last time.Time
-		lmsg *DevMsg
-	}
-
-	DevMsg struct {
-		id       string
-		heard_by string
-		stamp    time.Time
-		msg      string
-	}
-)
-
-const ser = "/dev/ttyAMA0"
-const get_fmt = "http://scout.polygame.fi/api/msg?msg=%s"
+const ser = "/dev/ttyUSB0"
 
 var (
 	pack_time        = 60 // ms
@@ -49,155 +20,108 @@ var (
 	posfd     *os.File
 	disfd     *os.File
 	port      *serial.Port
-	devs      []Relay
 )
 
-func CreateMacs(dev Relay, pkg tnparse.TNH) (tnparse.MACSuper, tnparse.MACSub) {
-	smac := tnparse.MACSuper{int(id), 1, 1, dev.path}
 
-	submac := tnparse.MACSub{int(id), 0, pkg}
-	return smac, submac
+type POS struct {
+	Havu string
+	sender   string
+	received uint
+	northing uint
+	easting  uint
+	height   float64
+	speed    float64
+	bearing  int
+	voltage  int
+	temp     int
+	distress int
+	status   int
+	angle    int
+	rssi     int
 }
 
-func WaitMac(in chan []byte) tnparse.MACSuper {
-	var msg []byte
-	tt := make(chan bool)
-	go Timeout(tt, 1000)
-	for {
-		select {
-		case msg = <-in:
-			if msg[0]&0x80 == 0x80 {
-				mac := tnparse.MACSuper{}
-				mac = mac.FromTNH(msg).(tnparse.MACSuper)
-				if mac.Jump_num == len(mac.Addr) {
-					return mac
-				}
-			}
-			disfd.WriteString(string(msg))
-			disfd.WriteString("\n")
-		case <-tt:
-			log.Println("TIMEOUT waiting proper package")
-			return tnparse.MACSuper{Pack_num: 0}
-		}
+func (p POS) FromTNH(message []byte) POS {
 
+	sendbyte := make([]byte, 3)
+	sendbyte[0] = ((message[0] & 15) << 1) + ((message[1] & 128) >> 7) + 65
+	sendbyte[1] = ((message[1] & 124) >> 2) + 65
+	sendbyte[2] = ((message[1] & 3) << 2) + ((message[2] & 192) >> 6) + 48
+	p.sender = fmt.Sprintf("%s", sendbyte)
+
+	var t uint
+	t = uint((message[2] & 63)) << 11
+	t += (uint(message[3]) << 3)
+	t += uint(message[4]&224) >> 5
+	p.received = t
+
+	northing := uint(0)
+	northing += uint((message[4] & 31)) << 16
+	northing += uint((message[5])) << 8
+	northing += uint(message[6])
+	northing += 6000000
+	p.northing = northing
+
+	easting := uint32(0)
+	easting += uint32(message[7]) << 12
+	easting += uint32(message[8]) << 4
+	easting += uint32((message[9] & 240)) >> 4
+	p.easting = uint(easting)
+
+	p.height = float64(((message[9]&15)<<7)+((message[10]&254)>>1)) * 2
+	p.speed = float64(((message[10]&1)<<8)+(message[11])) / 10
+	p.angle = int((message[12]&252)>>2) * 6
+	p.voltage = 5000 + 10*int(((message[12]&3)<<6)+((message[13]&252)>>2))
+	temp := ((message[13] & 3) << 4) + ((message[14] & 240) >> 4)
+	if temp > 32 {
+		p.temp = -int(((temp ^ 0xff) + 1) & 31)
+	} else {
+		p.temp = int(temp & 31)
 	}
+	p.status = int((message[14] & 14) >> 1)
+	p.distress = int(message[14] & 1)
+	p.rssi = -1 * int(message[15])
+
+	var h, m, s int
+	h = int(t) / 3600
+	m = (int(t) - h*3600) / 60
+	s = int(t) - h*3600 - m*60
+	p.Havu = fmt.Sprintf("$POS|ETRS-TM35FIN|%s||%d:%d:%d|%d|%d|%.2f|%d*",
+		p.sender,
+		h,
+		m,
+		s,
+		p.northing,
+		p.easting,
+		p.height,
+		p.distress)
+	return p
+}
+func (p POS) CalculateHavu() POS {
+
+	t := p.received
+	var h, m, s int
+	h = int(t) / 3600
+	m = (int(t) - h*3600) / 60
+	s = int(t) - h*3600 - m*60
+	p.Havu = fmt.Sprintf("$TACPOS|ETRS-TM35FIN|%s||UTC%d:%d:%d|%d|%d|%.2f|||OK|%d||%d|%s|%d|||*",
+		p.sender,
+		h,
+		m,
+		s,
+		p.northing,
+		p.easting,
+		p.height,
+		p.distress,
+		p.voltage,
+		"Tämä on pieni kyssäri",
+		p.rssi)
+	return p
 }
 
-func HandlePacket(smsg []byte, in chan []byte, dev Relay, wout chan string) {
-	mac := tnparse.MACSuper{}
-	_mac := mac.FromTNH(smsg)
-	switch _mac.(type) {
-	case tnparse.MACSuper:
-		mac = _mac.(tnparse.MACSuper)
-	default:
-		log.Printf("BAD SUPER: %v", _mac)
-		mac = WaitMac(in)
-		if mac.Pack_num == 0 {
-			log.Printf("BAD SUPER: %v", mac)
-			return
-		}
-	}
-	if mac.Jump_num != len(mac.Addr)-2 && len(mac.Addr) > 2 {
-		log.Printf("BAD SUPER: %v, %d", mac, len(mac.Addr)-1)
-		mac = WaitMac(in)
-		if mac.Pack_num == 0 {
-			log.Printf("BAD SUPER: %v", mac)
-			return
-		}
-	} else if mac.Jump_num != len(mac.Addr)-1 {
-		if mac.Pack_num == 0 {
-			log.Printf("BAD SUPER: %v", mac)
-			return
-		}
-	} else if strings.Compare(mac.Addr[0], dev.id) != 0 {
-		log.Printf("MAC: %v, dev %s", mac, dev.id)
-	}
-	tt := make(chan bool)
-	for i := 0; i < mac.Pack_num; {
-		var msg []byte
-		go Timeout(tt, 50)
-		select {
-		case msg = <-in:
-			mc := tnparse.MACSub{}
-			_mc := mc.FromTNH(msg)
-			switch _mc.(type) {
-			case tnparse.MACSub:
-				mc = _mc.(tnparse.MACSub)
-			default:
-				log.Println("WRONG PACKET")
-				return
-			}
-			switch mc.Packet.(type) {
-			case tnparse.POSREPLY:
-				p := mc.Packet.(tnparse.POSREPLY)
-				switch p.Pack.(type) {
-				case tnparse.POS:
-					_p := p.Pack.(tnparse.POS)
-					_p = _p.CalculateHavu(dev.id)
-					wout <- _p.Havu
-					posfd.WriteString(_p.Havu)
-					posfd.WriteString("\n")
-					i = mc.Pack_ord + 1
-					log.Printf("%d", i)
-				}
-			case tnparse.Pong:
-
-			default:
-				return
-			}
-		case <-tt:
-			log.Printf(`TIMEOUT RECEIVING PACKETS %s\n
-			RECEIVED %d PACKETS\n
-			EXPECTED %d\n`, dev.id, i, mac.Pack_num)
-			return
-		}
-	}
+func (p POS) ToTNH() []byte {
+	return make([]byte, 17)
 }
 
-// Two parameters, t is the channel and dur is the duration multiplier. Keep in
-// mind that the multiplied duration is in milliseconds
-func Timeout(t chan bool, dur int) {
-	time.Sleep(time.Duration(dur) * time.Millisecond)
-	t <- true
-}
-
-// Here the channels are buffered, so that it is asynchronous
-func SerialRead(out chan []byte) {
-	msgs := []byte{}
-	reading := false
-	for {
-		msg := make([]byte, 1)
-		_, err := port.Read(msg)
-		if err != nil {
-			log.Fatal("READ")
-		}
-		if msg[0] == '%' || msg[0] == '$' {
-			reading = true
-		} else if msg[0] == '\n' && reading == true {
-			reading = false
-			_msg := make([]byte, hex.DecodedLen(len(msgs)))
-			hex.Decode(_msg, msgs)
-			out <- _msg
-			msgs = []byte{}
-		} else if reading == true {
-			msgs = append(msgs, msg...)
-		}
-	}
-}
-func SerialWrite(in chan []byte) {
-	var _msg, msg []byte
-	for {
-		_msg = <-in
-		msg = make([]byte, hex.EncodedLen(len(_msg)))
-		hex.Encode(msg, _msg)
-		msg = append([]byte("$"), msg...)
-		msg = append(msg, []byte("\n")...)
-		_, err := port.Write(msg)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-}
 func ToHavu(in, out chan string) {
 	get_fmt := "http://scout.polygame.fi/api/msg?msg=%s"
 	for {
@@ -215,35 +139,41 @@ func ToHavu(in, out chan string) {
 	}
 }
 
-func MainLoop(in, out chan []byte, win, wout chan string) error {
-	devs = []Relay{}
-	devs = append(devs, Relay{"KB1", []string{"__:", "KB1"}, "", time.Now()})
-	devs = append(devs, Relay{"TB1", []string{"__:", "KB1", "TB1"}, "", time.Now()})
-	devs = append(devs, Relay{"TB2", []string{"__:", "KB1", "TB1", "TB2"}, "", time.Now()})
+// Here the channels are buffered, so that it is asynchronous
+func SerialRead(out chan []byte) {
+	msgs := []byte{}
+	reading := false
 	for {
-		for _, dev := range devs {
-			tt := make(chan bool)
-			log.Printf("Polling device %s\n", dev.id)
-			smac, submac := CreateMacs(dev, &tnparse.POSPOLL{})
-			out <- smac.ToTNH()
-			out <- submac.ToTNH()
-
-			var smsg []byte
-			tm := (len(dev.path)-2)*50 + 400
-			go Timeout(tt, tm)
-			select {
-			case smsg = <-in:
-				HandlePacket(smsg, in, dev, wout)
-				atomic.AddUint64(&id, 1)
-			case <-tt:
-				log.Printf("TIMEOUT CALLING %s\n", dev.id)
-			}
+		msg := make([]byte, 1)
+		_, err := port.Read(msg)
+		if err != nil {
+			log.Fatal("READ")
 		}
+		if msg[0] == '@' {
+			reading = true
+		} else if msg[0] == '\n' && reading == true {
+			reading = false
+			_msg := make([]byte, hex.DecodedLen(len(msgs)))
+			hex.Decode(_msg, msgs)
+			out <- _msg
+			msgs = []byte{}
+		} else if reading == true {
+			msgs = append(msgs, msg...)
+		}
+	}
+}
+func MainLoop(in, out chan []byte, win, wout chan string) error {
+	for {
+		_pos := POS{}
+		msg := <-in
+
+		pos := _pos.FromTNH(msg)
+		wout <- pos.CalculateHavu().Havu
+
 	}
 }
 
 func main() {
-
 	// Enable this to log into a file
 	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
@@ -282,9 +212,9 @@ func main() {
 	win := make(chan string, 200)
 	wout := make(chan string, 18000)
 	go SerialRead(sin)
-	go SerialWrite(sout)
 	for i := 0; i < 10; i++ {
 		go ToHavu(wout, win)
 	}
 	MainLoop(sin, sout, win, wout)
+
 }
