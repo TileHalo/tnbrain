@@ -9,7 +9,7 @@ import (
 	"github.com/tarm/serial"
 )
 
-const ser = "/dev/ttyUSB0"
+const ser = "/dev/ttyUSB1"
 
 var (
 	pack_time        = 60 // ms
@@ -40,7 +40,14 @@ type POS struct {
 	rssi     int
 }
 
-func (p POS) FromTNH(message []byte) POS {
+func (p POS) FromTNH(message1 []byte) POS {
+
+	// RSSI is sent as the first byte
+	rssibyte := message1[0]
+	message := make([]byte, 15)
+	for i:=0; i<14; i++ {
+		message[i] = message1[i+1]
+	}
 
 	sendbyte := make([]byte, 3)
 	sendbyte[0] = ((message[0] & 15) << 1) + ((message[1] & 128) >> 7) + 65
@@ -79,7 +86,7 @@ func (p POS) FromTNH(message []byte) POS {
 	}
 	p.status = int((message[14] & 14) >> 1)
 	p.distress = int(message[14] & 1)
-	p.rssi = -1 * int(message[15])
+	p.rssi = -1 * int(rssibyte)
 
 	var h, m, s int
 	h = int(t) / 3600
@@ -127,8 +134,9 @@ func ToHavu(in, out chan string) {
 	for {
 		msg := <-in
 		log.Printf("HAVU %s\n", msg)
-
-		for resp, err := http.Get(fmt.Sprintf(get_fmt, msg)); resp.StatusCode != 200 || err != nil; {
+		http.Get(fmt.Sprintf(get_fmt, msg));
+		resp, err := http.Get(fmt.Sprintf(get_fmt, msg));
+		if resp.StatusCode != 200 || err != nil {
 			if err != nil {
 				log.Println(err)
 			}
@@ -159,7 +167,10 @@ func SerialRead(out chan []byte) {
 			msgs = []byte{}
 		} else if reading == true {
 			msgs = append(msgs, msg...)
+		} else {
+			// receiving a debug print
 		}
+		os.Stdout.Write(msg)
 	}
 }
 func MainLoop(in, out chan []byte, win, wout chan string) error {
