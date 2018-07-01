@@ -40,13 +40,12 @@ type POS struct {
 	rssi     int
 }
 
-func (p POS) FromTNH(message1 []byte) POS {
+func (p POS) FromTNH(message []byte) POS {
 
 	// RSSI is sent as the first byte
-	rssibyte := message1[0]
-	message := make([]byte, 15)
-	for i:=0; i<14; i++ {
-		message[i] = message1[i+1]
+	rssibyte := message[0]
+	for i:=0; i<15; i++ {
+		message[i] = message[i+1]
 	}
 
 	sendbyte := make([]byte, 3)
