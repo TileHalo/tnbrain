@@ -17,6 +17,7 @@ var (
 	logfile          = "tacnetlog.log"
 	posfile          = "pos.log"
 	disfile          = "discard.log"
+	myid             = "KC1"
 	posfd     *os.File
 	disfd     *os.File
 	port      *serial.Port
@@ -119,7 +120,7 @@ func (p POS) CalculateHavu() POS {
 		p.height,
 		p.distress,
 		p.voltage,
-		"Tämä on pieni kyssäri",
+		myid,
 		p.rssi)
 	return p
 }
@@ -149,25 +150,22 @@ func ToHavu(in, out chan string) {
 // Here the channels are buffered, so that it is asynchronous
 func SerialRead(out chan []byte) {
 	msgs := []byte{}
-	reading := false
 	for {
 		msg := make([]byte, 1)
 		_, err := port.Read(msg)
 		if err != nil {
 			log.Fatal("READ")
 		}
-		if msg[0] == '@' {
-			reading = true
-		} else if msg[0] == '\n' && reading == true {
-			reading = false
-			_msg := make([]byte, hex.DecodedLen(len(msgs)))
-			hex.Decode(_msg, msgs)
-			out <- _msg
+		if msg[0] == '\n' {
+			if msgs[0] == '@' {
+				_msg := make([]byte, hex.DecodedLen(len(msgs)-1))
+				hex.Decode(_msg, msgs[1:])
+				out <- _msg
+			}
+			log.Printf("Serial: %s", msgs)
 			msgs = []byte{}
-		} else if reading == true {
-			msgs = append(msgs, msg...)
 		} else {
-			// receiving a debug print
+			msgs = append(msgs, msg...)
 		}
 		os.Stdout.Write(msg)
 	}
