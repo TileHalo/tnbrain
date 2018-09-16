@@ -1,12 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"encoding/hex"
-	"log"
-	"os"
-	"net/http"
+	"fmt"
 	"github.com/tarm/serial"
+	"log"
+	"net/http"
+	"os"
 )
 
 const ser = "/dev/ttyUSB1"
@@ -23,9 +23,8 @@ var (
 	port      *serial.Port
 )
 
-
 type POS struct {
-	Havu string
+	Havu     string
 	sender   string
 	received uint
 	northing uint
@@ -45,7 +44,7 @@ func (p POS) FromTNH(message []byte) POS {
 
 	// RSSI is sent as the first byte
 	rssibyte := message[0]
-	for i:=0; i<15; i++ {
+	for i := 0; i < 15; i++ {
 		message[i] = message[i+1]
 	}
 
@@ -133,14 +132,14 @@ func ToHavu(in, out chan string) {
 	get_fmt := "http://scout.polygame.fi/api/msg?msg=%s"
 	for {
 		msg := <-in
-		log.Printf("HAVU %s\n", msg)
-		http.Get(fmt.Sprintf(get_fmt, msg));
-		resp, err := http.Get(fmt.Sprintf(get_fmt, msg));
+		// log.Printf("HAVU %s\n", msg)
+		http.Get(fmt.Sprintf(get_fmt, msg))
+		resp, err := http.Get(fmt.Sprintf(get_fmt, msg))
 		if resp.StatusCode != 200 || err != nil {
 			if err != nil {
 				log.Println(err)
 			}
-			log.Printf("HAVU OK")
+			// log.Printf("HAVU OK")
 
 		}
 
@@ -162,7 +161,7 @@ func SerialRead(out chan []byte) {
 				hex.Decode(_msg, msgs[1:])
 				out <- _msg
 			}
-			log.Printf("Serial: %s", msgs)
+			// log.Printf("Serial: %s", msgs)
 			msgs = []byte{}
 		} else {
 			msgs = append(msgs, msg...)
