@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/tarm/serial"
-	"log"
+	// "log"
 	"net/http"
 	"os"
 )
@@ -14,13 +14,13 @@ const ser = "/dev/ttyUSB1"
 var (
 	pack_time        = 60 // ms
 	id        uint64 = 0
-	logfile          = "tacnetlog.log"
-	posfile          = "pos.log"
-	disfile          = "discard.log"
-	myid             = "KC1"
-	posfd     *os.File
-	disfd     *os.File
-	port      *serial.Port
+	// logfile          = "tacnetlog.log"
+	// posfile          = "pos.log"
+	// disfile          = "discard.log"
+	myid = "KC1"
+	// posfd     *os.File
+	// disfd     *os.File
+	port *serial.Port
 )
 
 type POS struct {
@@ -133,11 +133,10 @@ func ToHavu(in, out chan string) {
 	for {
 		msg := <-in
 		// log.Printf("HAVU %s\n", msg)
-		http.Get(fmt.Sprintf(get_fmt, msg))
 		resp, err := http.Get(fmt.Sprintf(get_fmt, msg))
 		if resp.StatusCode != 200 || err != nil {
 			if err != nil {
-				log.Println(err)
+				// log.Println(err)
 			}
 			// log.Printf("HAVU OK")
 
@@ -153,7 +152,7 @@ func SerialRead(out chan []byte) {
 		msg := make([]byte, 1)
 		_, err := port.Read(msg)
 		if err != nil {
-			log.Fatal("READ")
+			// log.Fatal("READ")
 		}
 		if msg[0] == '\n' {
 			if msgs[0] == '@' {
@@ -182,36 +181,36 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 
 func main() {
 	// Enable this to log into a file
-	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	if err != nil {
-		fmt.Printf("error opening file %s: %v", logfile, err)
-	}
-	log.SetOutput(f)
-	defer f.Close()
+	// f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// if err != nil {
+	// 	fmt.Printf("error opening file %s: %v", logfile, err)
+	// }
+	// log.SetOutput(f)
+	// defer f.Close()
 
-	fd, err := os.OpenFile(disfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	if err != nil {
-		fmt.Printf("Error opening file %s: %v", disfile, err)
-	}
-	disfd = fd
-	defer disfd.Close() // Might report an error
+	// fd, err := os.OpenFile(disfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// if err != nil {
+	// 	fmt.Printf("Error opening file %s: %v", disfile, err)
+	// }
+	// disfd = fd
+	// defer disfd.Close() // Might report an error
 
-	fd, err = os.OpenFile(posfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	if err != nil {
-		fmt.Printf("Error opening file %s: %v", posfile, err)
-	}
-	posfd = fd
-	defer posfd.Close() // Might report an error
+	// fd, err = os.OpenFile(posfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// if err != nil {
+	// 	fmt.Printf("Error opening file %s: %v", posfile, err)
+	// }
+	// posfd = fd
+	// defer posfd.Close() // Might report an error
 
 	conn := &serial.Config{Name: ser, Baud: 115200}
 	_port, err := serial.OpenPort(conn)
 	if err != nil {
-		log.Fatal(err)
+		// log.Fatal(err)
 	}
 	port = _port
 	defer port.Close()
 
-	log.Println("TACNET starting")
+	// log.Println("TACNET starting")
 
 	sin := make(chan []byte)
 	sout := make(chan []byte)
