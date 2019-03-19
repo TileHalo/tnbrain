@@ -74,7 +74,7 @@ func (p POS) FromTNH(message []byte) POS {
 	p.easting = uint(easting)
 
 	p.height = float64(((message[9]&15)<<7)+((message[10]&254)>>1)) * 2
-	p.speed = float64(((message[10]&1)<<8)+(message[11])) / 10
+	p.speed = float64((uint(message[10]&1)<<8)+(message[11])) / 10
 	p.angle = int((message[12]&252)>>2) * 6
 	p.voltage = 5000 + 10*int(((message[12]&3)<<6)+((message[13]&252)>>2))
 	temp := ((message[13] & 3) << 4) + ((message[14] & 240) >> 4)
