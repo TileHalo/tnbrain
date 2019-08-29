@@ -3,10 +3,15 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
-	"github.com/tarm/serial"
+	"io"
+	"log"
+	"os"
+
 	// "log"
 	"net/http"
-	"os"
+
+	"github.com/pkg/profile"
+	"github.com/tarm/serial"
 )
 
 const ser = "/dev/ttyUSB1"
@@ -14,13 +19,12 @@ const ser = "/dev/ttyUSB1"
 var (
 	pack_time        = 60 // ms
 	id        uint64 = 0
-	// logfile          = "tacnetlog.log"
-	// posfile          = "pos.log"
-	// disfile          = "discard.log"
+	logfile          = "tacnetlog.log"
+	posfile          = "pos.log"
+	disfile          = "discard.log"
 	myid = "KC1"
-	// posfd     *os.File
-	// disfd     *os.File
-	port *serial.Port
+	posfd     *os.File
+	disfd     *os.File
 )
 
 type POS struct {
@@ -74,7 +78,7 @@ func (p POS) FromTNH(message []byte) POS {
 	p.easting = uint(easting)
 
 	p.height = float64(((message[9]&15)<<7)+((message[10]&254)>>1)) * 2
-	p.speed = float64((uint(message[10]&1)<<8)+(message[11])) / 10
+	p.speed = float64((uint(message[10]&1)<<8)+uint(message[11])) / 10
 	p.angle = int((message[12]&252)>>2) * 6
 	p.voltage = 5000 + 10*int(((message[12]&3)<<6)+((message[13]&252)>>2))
 	temp := ((message[13] & 3) << 4) + ((message[14] & 240) >> 4)
@@ -129,43 +133,39 @@ func (p POS) ToTNH() []byte {
 }
 
 func ToHavu(in, out chan string) {
-	get_fmt := "http://scout.polygame.fi/api/msg?msg=%s"
+	get_fmt := "http://%s/api/msg?msg=%s"
 	for {
 		msg := <-in
-		// log.Printf("HAVU %s\n", msg)
-		resp, err := http.Get(fmt.Sprintf(get_fmt, msg))
+		resp, err := http.Get(fmt.Sprintf(get_fmt, "scout.polygame.fi", msg))
 		if resp.StatusCode != 200 || err != nil {
 			if err != nil {
-				// log.Println(err)
+				log.Println(err)
 			}
-			// log.Printf("HAVU OK")
-
 		}
-
 	}
 }
 
 // Here the channels are buffered, so that it is asynchronous
-func SerialRead(out chan []byte) {
+func SerialRead(out chan []byte, src io.Reader) {
 	msgs := []byte{}
 	for {
 		msg := make([]byte, 1)
-		_, err := port.Read(msg)
+		_, err := src.Read(msg)
 		if err != nil {
-			// log.Fatal("READ")
+			log.Println(err)
 		}
-		if msg[0] == '\n' {
+		if msg[0] == '\n' || msg[0] == 0x0a || msg[0] == 0xa {
 			if msgs[0] == '@' {
 				_msg := make([]byte, hex.DecodedLen(len(msgs)-1))
 				hex.Decode(_msg, msgs[1:])
 				out <- _msg
 			}
-			// log.Printf("Serial: %s", msgs)
+			log.Printf("Serial: %s", msgs)
 			msgs = []byte{}
 		} else {
 			msgs = append(msgs, msg...)
 		}
-		os.Stdout.Write(msg)
+		// os.Stdout.Write(msg)
 	}
 }
 func MainLoop(in, out chan []byte, win, wout chan string) error {
@@ -180,36 +180,35 @@ func MainLoop(in, out chan []byte, win, wout chan string) error {
 }
 
 func main() {
+	defer profile.Start(profile.MemProfile).Stop()
 	// Enable this to log into a file
-	// f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	// if err != nil {
-	// 	fmt.Printf("error opening file %s: %v", logfile, err)
-	// }
-	// log.SetOutput(f)
-	// defer f.Close()
+	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("error opening file %s: %v", logfile, err)
+	}
+	log.SetOutput(f)
+	defer f.Close()
 
-	// fd, err := os.OpenFile(disfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	// if err != nil {
-	// 	fmt.Printf("Error opening file %s: %v", disfile, err)
-	// }
-	// disfd = fd
-	// defer disfd.Close() // Might report an error
+	fd, err := os.OpenFile(disfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("Error opening file %s: %v", disfile, err)
+	}
+	disfd = fd
+	defer disfd.Close() // Might report an error
 
-	// fd, err = os.OpenFile(posfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	// if err != nil {
-	// 	fmt.Printf("Error opening file %s: %v", posfile, err)
-	// }
-	// posfd = fd
-	// defer posfd.Close() // Might report an error
+	fd, err = os.OpenFile(posfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("Error opening file %s: %v", posfile, err)
+	}
+	posfd = fd
+	defer posfd.Close() // Might report an error
 
 	conn := &serial.Config{Name: ser, Baud: 115200}
-	_port, err := serial.OpenPort(conn)
+	port, err := serial.OpenPort(conn)
 	if err != nil {
-		// log.Fatal(err)
+		log.Fatal(err)
 	}
-	port = _port
 	defer port.Close()
-
 	// log.Println("TACNET starting")
 
 	sin := make(chan []byte)
@@ -217,7 +216,7 @@ func main() {
 	// Buffered (hence, async) because internet might have a bad day.
 	win := make(chan string, 200)
 	wout := make(chan string, 18000)
-	go SerialRead(sin)
+	go SerialRead(sin, port)
 	for i := 0; i < 10; i++ {
 		go ToHavu(wout, win)
 	}
